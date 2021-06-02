@@ -16,6 +16,7 @@ public class Ring extends UnicastRemoteObject implements RingInterface {
 	private Node[] childStubs;
 	private ArrayList<String> liveNodes = new ArrayList<String>();
 	private int totalMessages = 0;
+	private ArrayList<Process> myProcesses =  new ArrayList<>();
 
 	public Ring(int simulationSize) throws RemoteException {
 		this.simulationSize = simulationSize;
@@ -57,7 +58,8 @@ public class Ring extends UnicastRemoteObject implements RingInterface {
 					String.valueOf(waitMillis),
 					String.valueOf(ring[nodeIndex]), left, right);
 			builder.directory(new File(System.getProperty("user.dir")));
-			builder.start();
+			Process current = builder.start();
+			myProcesses.add(current);
 		}
 	}
 
@@ -98,6 +100,9 @@ public class Ring extends UnicastRemoteObject implements RingInterface {
 			LocateRegistry.getRegistry(REG_PORT).unbind("ring_class");
 		} catch (Exception e) {
 			e.printStackTrace();
+		}
+		for (Process p : myProcesses) {
+			p.destroy();
 		}
 		System.exit(0);
 	}

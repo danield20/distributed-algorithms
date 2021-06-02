@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 
 public class Node extends UnicastRemoteObject implements ElectionNode {
 	private String nodeID;
@@ -22,6 +23,8 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 	private int inCount = 0;
 	CountDownLatch latch = new CountDownLatch(1);
 	private int messageCount = 0;
+	int leaderID = -1;
+	int electionRounds = 0;
 
 	private class NeighborLookupTask implements Callable<ElectionNode> {
 
@@ -68,15 +71,53 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 			int myUID = Integer.parseInt(nodeID);
 			int incomingUID = Integer.parseInt(message.senderUId);
 
+			if (message.type == MessageType.NODE_DIED) {
+
+				if (myUID != incomingUID) {
+					invoke(rightStub, message);
+				}
+
+				if (incomingUID == leaderID) {
+					log("Leader is dead - starting new election");
+					electionRounds++;
+					messageQueue.clear();;
+					leaderID = -1;
+
+					invoke(leftStub, new Message(nodeID, 1, 1, MessageType.SEND,
+					Direction.RIGHT));
+
+					invoke(rightStub, new Message(nodeID, 1, 1, MessageType.SEND,
+							Direction.LEFT));
+				}
+
+				return;
+			}
+
 			if (message.type == MessageType.ELECTED) {
 				ring_class.reportCount(++messageCount);
-				log("received election message");
-				relayElected();
-				LocateRegistry.getRegistry(RingInterface.REG_PORT).unbind(nodeID);
-				if (nodeState == NodeState.LEADER) {
-					ring_class.ringDestroyed();
+				leaderID = incomingUID;
+				log("received election message, node " + leaderID + " is the leader");
+				if (nodeState != NodeState.LEADER)
+					invoke(rightStub, message);
+				round = 0;
+				nodeState = NodeState.READY;
+				if (electionRounds == 1)
+					LocateRegistry.getRegistry(RingInterface.REG_PORT).unbind(nodeID);
+				if (myUID == leaderID) {
+					if (electionRounds != 1) {
+						log("Starting case when leader dies, leader dying now");
+						electionRounds++;
+						leftStub.setRight(rightStub);
+						rightStub.setLeft(leftStub);
+						nodeState = NodeState.LIMBO;
+
+						relayDead();
+					} else {
+						ring_class.ringDestroyed();
+					}
 				}
-				System.exit(0);
+				// if (electionRounds == 1)
+				// 	System.exit(0);
 				return;
 			}
 
@@ -114,7 +155,7 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 					if (incomingUID > myUID) {
 						if (nodeState != NodeState.LIMBO) {
 							nodeState = NodeState.LIMBO;
-							ring_class.reportNodeDeath(nodeID);
+							log("is out");
 						}
 						if (message.distance > 1) {
 							invoke(rightStub, createForward(message));
@@ -124,6 +165,7 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 					} else if (incomingUID == myUID
 							&& nodeState != NodeState.LEADER) {
 						nodeState = NodeState.LEADER;
+						log("I AM THE LEADER");
 						relayElected();
 					}
 					break;
@@ -139,6 +181,12 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 
 		private void relayElected() {
 			Message message = new Message(nodeID, 1, 1, MessageType.ELECTED,
+					Direction.LEFT);
+			invoke(rightStub, message);
+		}
+
+		private void relayDead() {
+			Message message = new Message(nodeID, 1, 1, MessageType.NODE_DIED,
 					Direction.LEFT);
 			invoke(rightStub, message);
 		}
@@ -205,6 +253,14 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 		return reply;
 	}
 
+	public void setLeft(ElectionNode newLeft) throws RemoteException, InterruptedException {
+		leftStub = newLeft;
+	}
+
+	public void setRight(ElectionNode newRight) throws RemoteException, InterruptedException {
+		rightStub = newRight;
+	}
+
 	@Override
 	public void passMessage(Message message) throws RemoteException,
 			InterruptedException {
@@ -230,6 +286,7 @@ public class Node extends UnicastRemoteObject implements ElectionNode {
 		new Thread(new Runnable() {
 			public void run() {
 				try {
+					TimeUnit.MILLISECONDS.sleep((long) (Math.random()%300));
 					stub.passMessage(message);
 				} catch (Exception e) {
 					log(e);
